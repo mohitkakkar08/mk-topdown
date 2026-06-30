@@ -1,0 +1,44 @@
+name: MK Top-Down — Afternoon Session
+
+# ────────────────────────────────────────────────────────────────────
+# Runs the worker for the SECOND half of the NSE session (12:30–15:30 IST).
+# Pairs with mk_morning.yml. No SESSION_END override here, so the worker
+# runs until its built-in 15:30 market close and then exits cleanly.
+# ────────────────────────────────────────────────────────────────────
+
+on:
+  schedule:
+    # 06:55 UTC = 12:25 IST (starts ~5 min before the 12:30 handover so
+    # there's no gap between the morning and afternoon jobs). Mon–Fri.
+    - cron: '55 6 * * 1-5'
+  workflow_dispatch:
+
+jobs:
+  run-afternoon:
+    runs-on: ubuntu-latest
+    # ~3h normal runtime (12:30–15:30). 5h cap for safety, under GH's 6h.
+    timeout-minutes: 300
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run worker (afternoon, stops 15:30 IST)
+        env:
+          FYERS_CLIENT_ID:            ${{ secrets.FYERS_CLIENT_ID }}
+          FYERS_SECRET_KEY:           ${{ secrets.FYERS_SECRET_KEY }}
+          FYERS_REDIRECT_URI:         ${{ secrets.FYERS_REDIRECT_URI }}
+          FYERS_ID:                   ${{ secrets.FYERS_ID }}
+          FYERS_TOTP_SECRET:          ${{ secrets.FYERS_TOTP_SECRET }}
+          FYERS_PIN:                  ${{ secrets.FYERS_PIN }}
+          SHEET_ID:                   ${{ secrets.SHEET_ID }}
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          # No SESSION_END → runs to built-in 15:30 close
+        run: python mk_topdown_worker.py
