@@ -1,0 +1,72 @@
+name: MK Top-Down — Demo / Test (manual)
+
+# ────────────────────────────────────────────────────────────────────
+# Run the worker ON DEMAND, any time — even outside market hours.
+# This is the GitHub equivalent of running `python mk_topdown_worker.py
+# --poll-now` in cmd on your laptop.
+#
+# Two modes (pick when you click "Run workflow"):
+#   • single   → one refresh, then exit (like --poll-now). ~30-60s.
+#   • loop     → keep refreshing every 60s for N minutes, then stop.
+#                Useful to watch the dashboard tick live during a demo.
+#
+# NOTE: outside market hours, Fyers returns last-traded / stale prices,
+# so the numbers won't move — but the dashboard, signals, contribution
+# tables, and sheet writes all populate exactly as they would live.
+# ────────────────────────────────────────────────────────────────────
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'Run mode'
+        required: true
+        default: 'single'
+        type: choice
+        options:
+          - single
+          - loop
+      loop_minutes:
+        description: 'If mode=loop, how many minutes to keep refreshing'
+        required: false
+        default: '10'
+        type: string
+
+jobs:
+  demo:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run worker (demo)
+        env:
+          FYERS_CLIENT_ID:            ${{ secrets.FYERS_CLIENT_ID }}
+          FYERS_SECRET_KEY:           ${{ secrets.FYERS_SECRET_KEY }}
+          FYERS_REDIRECT_URI:         ${{ secrets.FYERS_REDIRECT_URI }}
+          FYERS_ID:                   ${{ secrets.FYERS_ID }}
+          FYERS_TOTP_SECRET:          ${{ secrets.FYERS_TOTP_SECRET }}
+          FYERS_PIN:                  ${{ secrets.FYERS_PIN }}
+          SHEET_ID:                   ${{ secrets.SHEET_ID }}
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          # DEMO_FORCE tells the worker to ignore market-hours and run anyway
+          DEMO_FORCE:                 'true'
+          DEMO_MODE:                  ${{ inputs.mode }}
+          DEMO_LOOP_MINUTES:          ${{ inputs.loop_minutes }}
+        run: |
+          if [ "${{ inputs.mode }}" = "single" ]; then
+            echo "Demo: single refresh (ignores market hours)"
+            python mk_topdown_worker.py --poll-now
+          else
+            echo "Demo: looping every 60s for ${{ inputs.loop_minutes }} minutes"
+            python mk_topdown_worker.py --demo-loop ${{ inputs.loop_minutes }}
+          fi
