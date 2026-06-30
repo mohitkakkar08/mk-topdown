@@ -700,12 +700,14 @@ LEGACY_TO_DELETE = ["TD_LongBuildup", "TD_ShortBuildup",
                     "TD_ShortCovering", "TD_LongUnwinding"]
 
 # Parallel depth fetch — Fyers /data/depth accepts only 1 symbol per call,
-# but we can run multiple in parallel. With ROTATION_SLICES=1, the full F&O
-# universe (~208 names) is fetched every minute. 6 workers @ ~250ms latency
-# completes 208 calls in ~9s — well under POLL_INTERVAL_SEC.
-# If Fyers returns 429s, drop this back to 4 and the per-call sleep
-# inside fyers_fetch_quotes will absorb the slack.
-DEPTH_PARALLEL_WORKERS = 6
+# but we can run several in parallel. The right number depends on network
+# speed: on a slow home/office link, 6 is fine (latency naturally spaces the
+# calls). On GitHub's fast datacenter link, 6 fires too fast and trips Fyers'
+# ~10 req/sec cap (HTTP 429). 3 workers is the safe cloud setting — slightly
+# slower per sweep but stays under the limit. Combined with the exponential
+# backoff in _fyers_get, this eliminates the 429 storm.
+# Override per-environment via the DEPTH_WORKERS env var if needed.
+DEPTH_PARALLEL_WORKERS = int(os.environ.get("DEPTH_WORKERS", "3"))
 
 # ============================================================================
 #  LOGGING
@@ -897,8 +899,15 @@ def fyers_ensure_valid_token(force: bool = False) -> str:
 #  FYERS API  —  quotes and depth, with batching
 # ============================================================================
 
-def _fyers_get(token: str, url: str, retries: int = 2) -> dict:
-    """GET wrapper with one 429 retry. Throws on persistent failure."""
+def _fyers_get(token: str, url: str, retries: int = 5) -> dict:
+    """GET wrapper with exponential backoff on 429 (rate limit).
+
+    Fyers caps requests per second; under parallel load some calls get a
+    429. We retry with growing waits (0.5s, 1s, 2s, 4s, 8s) so a transient
+    burst clears instead of failing the call. Raises only after all retries
+    are exhausted or on a non-429 error.
+    """
+    backoff = 0.5
     for attempt in range(retries):
         r = requests.get(url, headers={
             "Authorization": f"{FYERS_CLIENT_ID}:{token}"
@@ -906,8 +915,12 @@ def _fyers_get(token: str, url: str, retries: int = 2) -> dict:
         if r.status_code == 200:
             return r.json()
         if r.status_code == 429 and attempt < retries - 1:
-            log.warning("429 from Fyers, retrying in 3s...")
-            time.sleep(3)
+            # Quiet on early attempts; only warn if it's persisting
+            if attempt >= 2:
+                log.warning(f"429 from Fyers (attempt {attempt+1}/{retries}), "
+                            f"backing off {backoff:.1f}s...")
+            time.sleep(backoff)
+            backoff = min(backoff * 2, 8.0)   # cap at 8s
             continue
         raise RuntimeError(f"Fyers {r.status_code}: {r.text[:300]}")
     raise RuntimeError("Fyers GET retries exhausted")
@@ -979,7 +992,14 @@ def fyers_fetch_depth(token: str, symbols: List[str]) -> Dict[str, dict]:
 
     out: Dict[str, dict] = {}
     with ThreadPoolExecutor(max_workers=DEPTH_PARALLEL_WORKERS) as ex:
-        for fut in as_completed(ex.submit(_one, s) for s in symbols):
+        # Stagger submissions slightly so all workers don't fire in the same
+        # millisecond — smooths the request rate and avoids tripping Fyers'
+        # per-second cap. ~40ms gap keeps us comfortably under ~10 req/sec.
+        futures = []
+        for s in symbols:
+            futures.append(ex.submit(_one, s))
+            time.sleep(0.04)
+        for fut in as_completed(futures):
             sym, data = fut.result()
             if data:
                 out[sym] = data
