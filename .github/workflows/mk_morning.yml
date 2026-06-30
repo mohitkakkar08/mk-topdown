@@ -1,0 +1,52 @@
+name: MK Top-Down — Morning Session
+
+# ────────────────────────────────────────────────────────────────────
+# Runs the worker for the FIRST half of the NSE session (09:15–12:30 IST).
+# Split into two jobs because GitHub caps a single job at 6 hours and the
+# full session is 6h15m. This job stops itself at 12:30 via SESSION_END.
+#
+# Cadence: the worker loops internally every 60s — true 1-minute updates.
+# We do NOT rely on cron for the 1-min timing (cron is 5-min min + flaky).
+# Cron only STARTS the long-running job; the worker controls the cadence.
+# ────────────────────────────────────────────────────────────────────
+
+on:
+  schedule:
+    # GitHub cron is in UTC. 03:40 UTC = 09:10 IST (starts ~5 min early so
+    # the worker is ready and waiting at 09:15). Mon–Fri only.
+    # NOTE: GitHub may delay scheduled runs under load. The worker waits
+    # for 09:15 internally, so a few minutes' start delay is harmless.
+    - cron: '40 3 * * 1-5'
+  # Manual trigger button in the Actions tab (for testing any time).
+  workflow_dispatch:
+
+jobs:
+  run-morning:
+    runs-on: ubuntu-latest
+    # Safety cap: kill the job after 5h even if something hangs (12:30 stop
+    # means ~3h15m normal runtime; 5h is generous headroom, well under GH's 6h).
+    timeout-minutes: 300
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run worker (morning, stops 12:30 IST)
+        env:
+          FYERS_CLIENT_ID:            ${{ secrets.FYERS_CLIENT_ID }}
+          FYERS_SECRET_KEY:           ${{ secrets.FYERS_SECRET_KEY }}
+          FYERS_REDIRECT_URI:         ${{ secrets.FYERS_REDIRECT_URI }}
+          FYERS_ID:                   ${{ secrets.FYERS_ID }}
+          FYERS_TOTP_SECRET:          ${{ secrets.FYERS_TOTP_SECRET }}
+          FYERS_PIN:                  ${{ secrets.FYERS_PIN }}
+          SHEET_ID:                   ${{ secrets.SHEET_ID }}
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          SESSION_END:                '12:30'
+        run: python mk_topdown_worker.py
