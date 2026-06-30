@@ -3814,6 +3814,53 @@ def force_one_poll():
     log.info("This was a ONE-TIME run. Worker is NOT polling. Exiting.")
 
 
+def demo_loop(minutes: int):
+    """
+    Run the full refresh loop every 60s for `minutes` minutes, IGNORING the
+    market-hours check. The GitHub equivalent of leaving the worker running
+    locally for a demo outside trading hours.
+
+    Outside market hours, Fyers returns last-traded prices, so the numbers
+    won't move — but the dashboard, signals, contribution tables, performers,
+    and sheet writes all populate and refresh exactly as they would live.
+    Use it to demo the live behaviour any time.
+    """
+    global FNO_UNIVERSE
+    log.info("=" * 60)
+    log.info(f"DEMO LOOP — refreshing every 60s for {minutes} min "
+             f"(market-hours check bypassed)")
+    log.info("=" * 60)
+    now = dt.datetime.now()
+    if not is_market_hours():
+        log.warning(f"It's {now.strftime('%H:%M')} {now.strftime('%a')} — "
+                    "outside live hours. Prices will be STALE (last close). "
+                    "Dashboard mechanics are real; the numbers just won't move.")
+
+    FNO_UNIVERSE = load_universe_from_sheet()
+    if not FNO_UNIVERSE:
+        log.error("F&O universe is empty. Run --refresh-universe first.")
+        sys.exit(1)
+    log.info(f"Loaded {len(FNO_UNIVERSE)} F&O tickers")
+
+    end_at = time.time() + minutes * 60
+    cycle = 0
+    while time.time() < end_at:
+        cycle += 1
+        t0 = time.time()
+        try:
+            refresh_once()
+        except Exception as e:
+            log.exception(f"Demo cycle {cycle} failed: {e}")
+        elapsed = time.time() - t0
+        log.info(f"Demo cycle {cycle}: refresh in {elapsed:.1f}s")
+        # Sleep the remainder of the 60s window (unless time's up)
+        if time.time() >= end_at:
+            break
+        sleep_for = max(POLL_INTERVAL_SEC - elapsed, 1)
+        time.sleep(sleep_for)
+    log.info(f"Demo loop finished after {cycle} cycle(s). Exiting.")
+
+
 def main():
     global FNO_UNIVERSE
     # ── Utility modes ── these work any day, anytime (not gated by market hours)
@@ -3834,6 +3881,18 @@ def main():
         return
     if "--poll-now" in sys.argv:
         force_one_poll()
+        return
+    if "--demo-loop" in sys.argv:
+        # Optional integer minutes after the flag; default 10
+        mins = 10
+        try:
+            idx = sys.argv.index("--demo-loop")
+            if idx + 1 < len(sys.argv):
+                mins = int(sys.argv[idx + 1])
+        except (ValueError, IndexError):
+            log.warning("Could not parse minutes after --demo-loop; using 10.")
+            mins = 10
+        demo_loop(mins)
         return
     if "--audit" in sys.argv:
         run_methodology_audit()
@@ -3861,6 +3920,7 @@ def main():
         print("  python mk_topdown_worker.py --list-indices        Diagnose which index symbols work")
         print("  python mk_topdown_worker.py --setup-sheets        Migrate/format Google sheets")
         print("  python mk_topdown_worker.py --poll-now            Run ONE refresh now (stale data on weekends)")
+        print("  python mk_topdown_worker.py --demo-loop 10        Loop every 60s for 10 min, ignore market hours (demo)")
         print("  python mk_topdown_worker.py --audit               Backtest hit rates on Snapshots Log")
         print("  python mk_topdown_worker.py --backfill-performers Reconstruct Persistent Performers from existing snapshots")
         print("  python mk_topdown_worker.py --refresh-weights     Check NIFTY/BANK NIFTY constituents vs NSE; report drift")
