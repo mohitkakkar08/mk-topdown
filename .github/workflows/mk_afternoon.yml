@@ -1,22 +1,13 @@
 name: MK Top-Down — Afternoon Session
 
-# ────────────────────────────────────────────────────────────────────
-# Runs the worker for the SECOND half of the NSE session (12:30–15:30 IST).
-# Pairs with mk_morning.yml. No SESSION_END override here, so the worker
-# runs until its built-in 15:30 market close and then exits cleanly.
-# ────────────────────────────────────────────────────────────────────
-
 on:
   schedule:
-    # 06:55 UTC = 12:25 IST (starts ~5 min before the 12:30 handover so
-    # there's no gap between the morning and afternoon jobs). Mon–Fri.
     - cron: '55 6 * * 1-5'
   workflow_dispatch:
 
 jobs:
   run-afternoon:
     runs-on: ubuntu-latest
-    # ~3h normal runtime (12:30–15:30). 5h cap for safety, under GH's 6h.
     timeout-minutes: 300
     steps:
       - name: Checkout repo
@@ -40,5 +31,4 @@ jobs:
           FYERS_PIN:                  ${{ secrets.FYERS_PIN }}
           SHEET_ID:                   ${{ secrets.SHEET_ID }}
           GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
-          # No SESSION_END → runs to built-in 15:30 close
         run: python mk_topdown_worker.py
