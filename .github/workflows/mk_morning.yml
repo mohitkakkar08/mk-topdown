@@ -1,30 +1,13 @@
 name: MK Top-Down — Morning Session
 
-# ────────────────────────────────────────────────────────────────────
-# Runs the worker for the FIRST half of the NSE session (09:15–12:30 IST).
-# Split into two jobs because GitHub caps a single job at 6 hours and the
-# full session is 6h15m. This job stops itself at 12:30 via SESSION_END.
-#
-# Cadence: the worker loops internally every 60s — true 1-minute updates.
-# We do NOT rely on cron for the 1-min timing (cron is 5-min min + flaky).
-# Cron only STARTS the long-running job; the worker controls the cadence.
-# ────────────────────────────────────────────────────────────────────
-
 on:
   schedule:
-    # GitHub cron is in UTC. 03:40 UTC = 09:10 IST (starts ~5 min early so
-    # the worker is ready and waiting at 09:15). Mon–Fri only.
-    # NOTE: GitHub may delay scheduled runs under load. The worker waits
-    # for 09:15 internally, so a few minutes' start delay is harmless.
     - cron: '40 3 * * 1-5'
-  # Manual trigger button in the Actions tab (for testing any time).
   workflow_dispatch:
 
 jobs:
   run-morning:
     runs-on: ubuntu-latest
-    # Safety cap: kill the job after 5h even if something hangs (12:30 stop
-    # means ~3h15m normal runtime; 5h is generous headroom, well under GH's 6h).
     timeout-minutes: 300
     steps:
       - name: Checkout repo
