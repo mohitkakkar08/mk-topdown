@@ -703,11 +703,11 @@ LEGACY_TO_DELETE = ["TD_LongBuildup", "TD_ShortBuildup",
 # but we can run several in parallel. The right number depends on network
 # speed: on a slow home/office link, 6 is fine (latency naturally spaces the
 # calls). On GitHub's fast datacenter link, 6 fires too fast and trips Fyers'
-# ~10 req/sec cap (HTTP 429). 3 workers is the safe cloud setting — slightly
-# slower per sweep but stays under the limit. Combined with the exponential
-# backoff in _fyers_get, this eliminates the 429 storm.
-# Override per-environment via the DEPTH_WORKERS env var if needed.
-DEPTH_PARALLEL_WORKERS = int(os.environ.get("DEPTH_WORKERS", "3"))
+# ~10 req/sec cap (HTTP 429). 4 workers + a light 15ms submit stagger is the
+# sweet spot in the cloud — full 179-stock sweep in ~30-40s (under the 60s
+# window) while staying under the rate limit. The exponential backoff in
+# _fyers_get absorbs any momentary 429. Tune via the DEPTH_WORKERS env var.
+DEPTH_PARALLEL_WORKERS = int(os.environ.get("DEPTH_WORKERS", "4"))
 
 # ============================================================================
 #  LOGGING
@@ -992,13 +992,15 @@ def fyers_fetch_depth(token: str, symbols: List[str]) -> Dict[str, dict]:
 
     out: Dict[str, dict] = {}
     with ThreadPoolExecutor(max_workers=DEPTH_PARALLEL_WORKERS) as ex:
-        # Stagger submissions slightly so all workers don't fire in the same
-        # millisecond — smooths the request rate and avoids tripping Fyers'
-        # per-second cap. ~40ms gap keeps us comfortably under ~10 req/sec.
+        # Light stagger so workers don't all fire in the same millisecond.
+        # 15ms × 179 symbols ≈ 2.7s of submission spread — enough to smooth
+        # the burst, small enough to keep the full sweep well under 60s.
+        # With 4 workers the effective rate stays under Fyers' ~10/sec cap,
+        # and the exponential backoff in _fyers_get absorbs any momentary 429.
         futures = []
         for s in symbols:
             futures.append(ex.submit(_one, s))
-            time.sleep(0.04)
+            time.sleep(0.015)
         for fut in as_completed(futures):
             sym, data = fut.result()
             if data:
@@ -3977,10 +3979,9 @@ def main():
             now = dt.datetime.now()
             if not is_market_hours():
                 # Exit cleanly if market has CLOSED for today (was open earlier
-                # in this session) — so Task Scheduler can launch a fresh run
-                # next weekday morning.
+                # in this session) — so the scheduler can launch fresh next day.
                 if market_opened_today:
-                    log.info("Market closed for today. Exiting cleanly.")
+                    log.info("Session ended for this job. Exiting cleanly.")
                     if _overlay is not None:
                         _overlay.shutdown()
                     return
@@ -3990,18 +3991,30 @@ def main():
                     if _overlay is not None:
                         _overlay.shutdown()
                     return
-                # Edge case: launched AFTER market close on a weekday (e.g.
-                # laptop opened at 16:00). Don't loop pointlessly until 9:15
-                # tomorrow — exit so the scheduler can fire fresh next day.
-                market_close = now.replace(hour=15, minute=30,
-                                            second=0, microsecond=0)
-                if now >= market_close:
-                    log.info(f"Launched after today's close ({now.strftime('%H:%M')}). "
-                             "Nothing to do until tomorrow. Exiting.")
+                # Determine this job's EFFECTIVE end time: SESSION_END override
+                # (e.g. 12:30 for the morning job) if set, else 15:30 close.
+                if SESSION_END_OVERRIDE:
+                    try:
+                        eh, em = SESSION_END_OVERRIDE.split(":")
+                        eff_end = now.replace(hour=int(eh), minute=int(em),
+                                              second=0, microsecond=0)
+                    except (ValueError, AttributeError):
+                        eff_end = now.replace(hour=15, minute=30,
+                                              second=0, microsecond=0)
+                else:
+                    eff_end = now.replace(hour=15, minute=30,
+                                          second=0, microsecond=0)
+                # If we're already PAST this job's window end, there's nothing
+                # to do — exit. (This covers: launched after close, OR the
+                # morning job manually run after 12:30, OR any off-window run.)
+                if now >= eff_end:
+                    log.info(f"Launched after this job's window end "
+                             f"({now.strftime('%H:%M')} ≥ "
+                             f"{eff_end.strftime('%H:%M')}). Nothing to do. Exiting.")
                     if _overlay is not None:
                         _overlay.shutdown()
                     return
-                # Pre-market: wait a few minutes and re-check
+                # Otherwise we're genuinely BEFORE the 9:15 open — wait for it.
                 log.info(f"Pre-market ({now.strftime('%H:%M')}), waiting 5 min...")
                 time.sleep(300)
                 continue
